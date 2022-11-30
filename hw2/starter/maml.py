@@ -13,6 +13,8 @@ from torch.utils import tensorboard
 import omniglot
 import util  # pylint: disable=unused-import
 
+import time
+
 NUM_INPUT_CHANNELS = 1
 NUM_HIDDEN_CHANNELS = 64
 KERNEL_SIZE = 3
@@ -169,6 +171,7 @@ class MAML:
             k: torch.clone(v)
             for k, v in self._meta_parameters.items()
         }
+
         # ********************************************************
         # ******************* YOUR CODE HERE *********************
         # ********************************************************
@@ -178,7 +181,28 @@ class MAML:
         # Make sure to populate accuracies and update parameters.
         # Use F.cross_entropy to compute classification losses.
         # Use util.score to compute accuracies.
+        for _ in range(self._num_inner_steps):
+            pred = self._forward(images, parameters)
+            loss = F.cross_entropy(pred, labels)
+            acc = util.score(pred, labels)
+            gradients = autograd.grad(loss, parameters.values(), create_graph=train)
+            # print(list(parameters.keys()))
+            # print(f"Before Update: {parameters['w4'][0][0]:.4f}")
 
+            for n, key in enumerate(parameters.keys()):
+                param = parameters[key]
+                # print(param[0][0])
+                param = param - self._inner_lrs[key] * gradients[n]
+                # print(param[0][0])
+                parameters[key] = param
+            
+            # print(f"After Update: {parameters['w4'][0][0]:.4f}")
+
+            accuracies += [acc]
+        
+        pred = self._forward(images, parameters)
+        acc = util.score(pred, labels)
+        accuracies += [acc]
         # ********************************************************
         # ******************* YOUR CODE HERE *********************
         # ********************************************************
@@ -219,6 +243,15 @@ class MAML:
             # Make sure to populate outer_loss_batch, accuracies_support_batch,
             # and accuracy_query_batch.
 
+            phi, accuracy = self._inner_loop(images_support, labels_support, train)
+            accuracies_support_batch += [accuracy]
+            
+            pred = self._forward(images_query, phi)
+            loss = F.cross_entropy(pred, labels_query)
+            acc = util.score(pred, labels_query)
+            outer_loss_batch += [loss]
+            accuracy_query_batch += [acc]
+
             # ********************************************************
             # ******************* YOUR CODE HERE *********************
             # ********************************************************
@@ -248,9 +281,11 @@ class MAML:
                 start=self._start_train_step
         ):
             self._optimizer.zero_grad()
+            t1 = time.time()
             outer_loss, accuracies_support, accuracy_query = (
                 self._outer_step(task_batch, train=True)
             )
+            t2 = time.time() - t1
             outer_loss.backward()
             self._optimizer.step()
 
@@ -264,6 +299,8 @@ class MAML:
                     f'{accuracies_support[-1]:.3f}, '
                     f'post-adaptation query accuracy: '
                     f'{accuracy_query:.3f}'
+                    f'time: '
+                    f'{t2:.3f}'
                 )
                 writer.add_scalar('loss/train', outer_loss.item(), i_step)
                 writer.add_scalar(
@@ -399,8 +436,10 @@ def main(args):
     log_dir = args.log_dir
     if log_dir is None:
         log_dir = f'./logs/maml/omniglot.way:{args.num_way}.support:{args.num_support}.query:{args.num_query}.inner_steps:{args.num_inner_steps}.inner_lr:{args.inner_lr}.learn_inner_lrs:{args.learn_inner_lrs}.outer_lr:{args.outer_lr}.batch_size:{args.batch_size}'  # pylint: disable=line-too-long
+        log_dir = 'test'
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
+    print(f'device: {DEVICE}')
 
     maml = MAML(
         args.num_way,
@@ -474,7 +513,7 @@ if __name__ == '__main__':
                         help='number of support examples per class in a task')
     parser.add_argument('--num_query', type=int, default=15,
                         help='number of query examples per class in a task')
-    parser.add_argument('--num_inner_steps', type=int, default=1,
+    parser.add_argument('--num_inner_steps', type=int, default=40,
                         help='number of inner-loop updates')
     parser.add_argument('--inner_lr', type=float, default=0.4,
                         help='inner-loop learning rate initialization')
